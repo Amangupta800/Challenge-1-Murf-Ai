@@ -21,16 +21,89 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
+import json
+from datetime import datetime
+from pathlib import Path
+
+from livekit.agents import function_tool, RunContext
+
 
 
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
-            You are curious, friendly, and have a sense of humor.""",
+            instructions="""You are a friendly coffee shop barista for the brand "Starbucks".
+
+Your job is to:
+- Greet the customer warmly
+- Take their coffee/tea order
+- Ask follow-up questions until you know:
+  - drinkType  (e.g. latte, cappuccino, americano, chai)
+  - size       (small, medium, large)
+  - milk       (whole, skim, oat, almond, soy, none)
+  - extras     (array of extra options: extra shot, syrup, iced/hot, whipped cream, etc.)
+  - name       (customer's first name for the cup)
+
+Rules:
+- If any field is missing or unclear, ask a **clear, short question** to fill it.
+- Confirm the final order back to the user.
+- When you have ALL of these details, call the `save_order` tool with:
+  - drinkType
+  - size
+  - milk
+  - extras (array)
+  - name
+- After saving, tell the user: "Great, I have saved your order. Anything else today?"
+- Keep responses concise and conversational."""
         )
+
+
+
+        # DEFAULT EMPTY ORDER STATE
+        self.order = {
+            "drinkType": None,
+            "size": None,
+            "milk": None,
+            "extras": [],
+            "name": None
+        }
+
+    # SAVE ORDER TOOL (MUST BE INSIDE CLASS)
+    @function_tool
+    async def save_order(
+        self,
+        context: RunContext,
+        drinkType: str,
+        size: str,
+        milk: str,
+        extras: list[str],
+        name: str,
+    ):
+        """Save the current order to a file as JSON."""
+        # Build the order dict from the tool arguments
+        order = {
+            "drinkType": drinkType,
+            "size": size,
+            "milk": milk,
+            "extras": extras,
+            "name": name,
+        }
+
+        # Also update self.order (optional but nice to keep in sync)
+        self.order = order
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Save inside backend/orders/
+        file_path = Path(__file__).parent.parent / "orders" / f"order_{timestamp}.json"
+        file_path.parent.mkdir(exist_ok=True)
+
+        with file_path.open("w") as f:
+            json.dump(self.order, f, indent=2)
+
+        return f"Order saved as {file_path.name}"
+
+
+
 
     # To add tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
