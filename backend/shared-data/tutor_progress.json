@@ -1,0 +1,14 @@
+{
+  "variables": {
+    "teach_back_scores": [],
+    "quiz_scores": []
+  },
+  "loops": {
+    "teach_back_scores": [],
+    "quiz_scores": []
+  },
+  "functions": {
+    "teach_back_scores": [],
+    "quiz_scores": []
+  }
+}
