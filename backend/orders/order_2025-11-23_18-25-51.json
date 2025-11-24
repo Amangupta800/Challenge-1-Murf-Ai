@@ -1,9 +1,7 @@
-̦{
+{
   "drinkType": "latte",
   "size": "medium",
   "milk": "almond",
-  "extras": [
-    "hot"
-  ],
+  "extras": [],
   "name": "Aman"
 }

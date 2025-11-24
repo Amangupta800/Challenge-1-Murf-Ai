@@ -1,6 +1,10 @@
 import logging
+import json
+from datetime import datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
+
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -12,199 +16,239 @@ from livekit.agents import (
     cli,
     metrics,
     tokenize,
-    # function_tool,
-    # RunContext
+    function_tool,
+    RunContext
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+# -------------------------------------------------
+# Setup
+# -------------------------------------------------
+
 logger = logging.getLogger("agent")
-
 load_dotenv(".env.local")
-import json
-from datetime import datetime
-from pathlib import Path
 
-from livekit.agents import function_tool, RunContext
+LOG_PATH = Path(__file__).parent.parent / "wellness_log.json"
 
 
+def load_wellness_log() -> list[dict]:
+    """Load history from JSON."""
+    if not LOG_PATH.exists():
+        return []
+    try:
+        with LOG_PATH.open("r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not read wellness log: {e}")
+        return []
 
+
+def summarize_last_entry(entries: list[dict]) -> str:
+    """Summarize the latest check-in."""
+    if not entries:
+        return "This is your very first check-in with me."
+
+    last = entries[-1]
+    mood = last.get("mood", "unspecified mood")
+    energy = last.get("energy", "unspecified energy")
+    goals = ", ".join(last.get("goals", [])) or "no specific goals"
+
+    return (
+        f"Last time, you said your mood was '{mood}', "
+        f"your energy was '{energy}', and your goals were: {goals}."
+    )
+
+
+# -------------------------------------------------
+# Assistant Class
+# -------------------------------------------------
 class Assistant(Agent):
     def __init__(self) -> None:
-        super().__init__(
-            instructions="""You are a friendly coffee shop barista for the brand "Starbucks".
+        # Load past wellness data
+        self.log_entries = load_wellness_log()
 
-Your job is to:
-- Greet the customer warmly
-- Take their coffee/tea order
-- Ask follow-up questions until you know:
-  - drinkType  (e.g. latte, cappuccino, americano, chai)
-  - size       (small, medium, large)
-  - milk       (whole, skim, oat, almond, soy, none)
-  - extras     (array of extra options: extra shot, syrup, iced/hot, whipped cream, etc.)
-  - name       (customer's first name for the cup)
+        last_summary = summarize_last_entry(self.log_entries)
 
-Rules:
-- If any field is missing or unclear, ask a **clear, short question** to fill it.
-- Confirm the final order back to the user.
-- When you have ALL of these details, call the `save_order` tool with:
-  - drinkType
-  - size
-  - milk
-  - extras (array)
-  - name
-- After saving, tell the user: "Great, I have saved your order. Anything else today?"
-- Keep responses concise and conversational."""
-        )
+        # Extract last values (for better referencing)
+        if self.log_entries:
+            last = self.log_entries[-1]
+            last_mood = last.get("mood", "unspecified")
+            last_energy = last.get("energy", "unspecified")
+            last_goals = ", ".join(last.get("goals", [])) if last.get("goals") else "no goals"
+        else:
+            last_mood = None
+            last_energy = None
+            last_goals = None
 
+        instructions = f"""
+You are a supportive, realistic health & wellness voice companion.
+You help the user reflect on their day, mood, energy, and simple objectives.
 
+SAFETY:
+- You are NOT a doctor or therapist.
+- Do NOT diagnose or give medical instructions.
+- If the user expresses crisis-level distress, encourage them to reach out to a trusted contact or local professional.
 
-        # DEFAULT EMPTY ORDER STATE
-        self.order = {
-            "drinkType": None,
-            "size": None,
-            "milk": None,
-            "extras": [],
-            "name": None
-        }
+PAST SESSION MEMORY:
+Here is what you know from previous check-ins:
+{last_summary}
 
-    # SAVE ORDER TOOL (MUST BE INSIDE CLASS)
+Last mood: {last_mood}
+Last energy: {last_energy}
+Last goals: {last_goals}
+
+Use this info naturally.  
+Example:
+- “Last time you felt {last_mood}. How does today compare?”
+- “Previously you mentioned goals like {last_goals}. Want to set something similar today?”
+
+TODAY’S CHECK-IN FLOW:
+1. Warm greeting.
+2. Ask about:
+   - today's emotional mood,
+   - today's energy,
+   - any stress,
+3. Ask for 1–3 simple intentions / goals for today.
+4. Offer simple, practical, NON-MEDICAL advice.
+5. Give a short recap.
+6. CONFIRM with: “Does this sound right?”
+7. ALWAYS call save_checkin at the end, even if the user does not confirm.
+
+   With:
+   - mood
+   - energy
+   - goals
+   - a short 1-2 sentence summary
+
+STYLE:
+- Warm, concise, calm.
+- One question at a time.
+- Supportive and grounded.
+"""
+
+        super().__init__(instructions=instructions)
+
+    # ---------- TOOL: save daily check-in ----------
     @function_tool
-    async def save_order(
+    async def save_checkin(
         self,
         context: RunContext,
-        drinkType: str,
-        size: str,
-        milk: str,
-        extras: list[str],
-        name: str,
+        mood: str,
+        energy: str,
+        goals: list[str],
+        summary: str,
     ):
-        """Save the current order to a file as JSON."""
-        # Build the order dict from the tool arguments
-        order = {
-            "drinkType": drinkType,
-            "size": size,
-            "milk": milk,
-            "extras": extras,
-            "name": name,
+        """
+        Save the daily wellness check-in to wellness_log.json.
+        """
+
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "mood": mood,
+            "energy": energy,
+            "goals": goals,
+            "summary": summary,
         }
 
-        # Also update self.order (optional but nice to keep in sync)
-        self.order = order
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # Load, append, save
+        log = load_wellness_log()
+        log.append(entry)
 
-        # Save inside backend/orders/
-        file_path = Path(__file__).parent.parent / "orders" / f"order_{timestamp}.json"
-        file_path.parent.mkdir(exist_ok=True)
+        with LOG_PATH.open("w") as f:
+            json.dump(log, f, indent=2)
 
-        with file_path.open("w") as f:
-            json.dump(self.order, f, indent=2)
+        self.log_entries = log
 
-        return f"Order saved as {file_path.name}"
+        return "Daily wellness check-in saved."
 
 
 
-
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
-
+# -------------------------------------------------
+# Prewarm
+# -------------------------------------------------
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
-async def entrypoint(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
-    ctx.log_context_fields = {
-        "room": ctx.room.name,
-    }
+# -------------------------------------------------
+# Entrypoint
+# -------------------------------------------------
 
-    # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
+async def entrypoint(ctx: JobContext):
+    ctx.log_context_fields = {"room": ctx.room.name}
+
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=deepgram.STT(model="nova-3"),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
-        llm=google.LLM(
-                model="gemini-2.5-flash",
-            ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
+        llm=google.LLM(model="gemini-2.5-flash"),
         tts=murf.TTS(
-                voice="en-US-matthew", 
-                style="Conversation",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True
-            ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
+            voice="en-US-matthew",
+            style="Conversation",
+            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            text_pacing=True,
+        ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
 
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # Metrics collection, to measure pipeline performance
-    # For more information, see https://docs.livekit.io/agents/build/metrics/
-    usage_collector = metrics.UsageCollector()
+    usage = metrics.UsageCollector()
 
     @session.on("metrics_collected")
-    def _on_metrics_collected(ev: MetricsCollectedEvent):
+    def _m(ev: MetricsCollectedEvent):
         metrics.log_metrics(ev.metrics)
-        usage_collector.collect(ev.metrics)
+        usage.collect(ev.metrics)
 
-    async def log_usage():
-        summary = usage_collector.get_summary()
-        logger.info(f"Usage: {summary}")
+    # -------------------------------------------------
+    # Instantiate Assistant & Attach Transcript Listener
+    # -------------------------------------------------
 
-    ctx.add_shutdown_callback(log_usage)
+    assistant = Assistant()
 
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
+    @session.on("transcription")
+    def on_user_text(ev):
+        text = ev.text.lower()
 
-    # Start the session, which initializes the voice pipeline and warms up the models
+        # detect mood
+        if assistant.mood is None and (
+            "feel" in text or "mood" in text or "emotion" in text
+        ):
+            assistant.mood = ev.text
+
+        # detect energy
+        if assistant.energy is None and (
+            "energy" in text or "tired" in text or "low" in text or "high" in text
+        ):
+            assistant.energy = ev.text
+
+        # detect goals
+        if "goal" in text or "want to" in text or "plan to" in text:
+            items = [g.strip() for g in ev.text.replace("and", ",").split(",")]
+            assistant.goals = [i for i in items if len(i) > 2]
+
+        # if all info is collected → save
+        if assistant.is_ready_to_save():
+            summary = (
+                f"Today you said your mood is '{assistant.mood}', "
+                f"your energy is '{assistant.energy}', and your goals are {assistant.goals}."
+            )
+
+            session.invoke_tool(
+                "save_checkin",
+                mood=assistant.mood,
+                energy=assistant.energy,
+                goals=assistant.goals,
+                summary=summary,
+            )
+
+    # Start agent session
     await session.start(
-        agent=Assistant(),
+        agent=assistant,
         room=ctx.room,
-        room_input_options=RoomInputOptions(
-            # For telephony applications, use `BVCTelephony` for best results
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
+        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
     )
 
-    # Join the room and connect to the user
     await ctx.connect()
 
 

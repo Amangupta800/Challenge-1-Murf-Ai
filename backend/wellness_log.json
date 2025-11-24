@@ -1,0 +1,29 @@
+[
+  {
+    "timestamp": "2025-11-24T18:44:05",
+    "mood": "good",
+    "energy": "energetic but also tired",
+    "goals": [
+      "focus on my project"
+    ],
+    "summary": "You're feeling good and a mix of energetic and tired today. Your main goal is to focus on your project."
+  },
+  {
+    "timestamp": "2025-11-24T19:02:37",
+    "mood": "emotional",
+    "energy": "balanced",
+    "goals": [
+      "complete office work by 9 PM"
+    ],
+    "summary": "Feeling emotional but balanced, with a clear goal to complete office work by 9 PM."
+  },
+  {
+    "timestamp": "2025-11-24T19:19:48",
+    "mood": "emotional",
+    "energy": "balanced",
+    "goals": [
+      "complete office work code"
+    ],
+    "summary": "User is feeling emotional with balanced energy and mild stress, and their main goal is to complete important office work code today."
+  }
+]
