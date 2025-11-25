@@ -1,0 +1,44 @@
+[
+  {
+    "id": "overview",
+    "question": "What is Blink Digital and what do you do?",
+    "answer": "Blink Digital is a digital-first creative and technology agency based in India. We help brands build websites, apps, campaigns, and digital experiences across web, mobile, and social.",
+    "keywords": ["what is blink", "who are you", "what do you do", "about blink", "overview"]
+  },
+  {
+    "id": "services",
+    "question": "What services does Blink Digital offer?",
+    "answer": "Blink Digital offers end-to-end digital services including website and web app development, UI/UX design, digital campaigns, content and social, performance marketing, and creative technology projects.",
+    "keywords": ["services", "what do you offer", "capabilities", "website development", "ui ux", "marketing"]
+  },
+  {
+    "id": "clients",
+    "question": "Who is Blink Digital for?",
+    "answer": "Blink Digital works with startups, high-growth companies, and established brands that care about high quality digital experiences, especially in consumer, fintech, media, and D2C categories.",
+    "keywords": ["who is this for", "who do you work with", "clients", "industries"]
+  },
+  {
+    "id": "pricing",
+    "question": "How does pricing work?",
+    "answer": "Blink Digital typically works on project-based retainers or scoped engagements. Pricing depends on complexity, timeline, and scope. For example, a small marketing site is very different from a large product build. The SDR agent cannot give exact quotes but can capture your requirements for a follow-up from the team.",
+    "keywords": ["pricing", "price", "cost", "budget", "how much"]
+  },
+  {
+    "id": "process",
+    "question": "What does your process look like?",
+    "answer": "Most projects start with a discovery and strategy phase, followed by UX/UI design, development, QA, and launch. We usually collaborate closely with product, marketing, and leadership teams on the client side.",
+    "keywords": ["process", "how you work", "workflow", "project flow"]
+  },
+  {
+    "id": "contact",
+    "question": "How do we get started?",
+    "answer": "To get started, we schedule a discovery call to understand your goals, timelines, and constraints. Our SDR team will collect your details and share them with the core team, who then follow up with a more detailed proposal.",
+    "keywords": ["get started", "contact", "talk to sales", "discovery", "demo", "call"]
+  },
+  {
+    "id": "location",
+    "question": "Where are you based?",
+    "answer": "Blink Digital is based in Mumbai India and works with clients across India and global markets using remote collaboration.",
+    "keywords": ["where are you based", "location", "office"]
+  }
+]

@@ -2,7 +2,6 @@ import logging
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -24,279 +23,232 @@ from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 # ----------------------------------------------------
-# Setup & shared content
+# Setup
 # ----------------------------------------------------
 
 logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
-CONTENT_PATH = Path(__file__).parent.parent / "shared-data" / "day4_tutor_content.json"
+BASE_DIR = Path(__file__).parent.parent
+FAQ_PATH = BASE_DIR / "shared-data" / "day5_blink_faq.json"
+LEADS_DIR = BASE_DIR / "leads"
+LEADS_DIR.mkdir(exist_ok=True)
 
 
-def _default_tutor_content() -> list[dict]:
-    """Fallback content if JSON file is missing or invalid."""
-    return [
-        {
-            "id": "variables",
-            "title": "Variables",
-            "summary": "Variables store values so you can reuse them later. Think of them as labeled boxes that hold data like numbers or text.",
-            "sample_question": "What is a variable and why is it useful?",
-        },
-        {
-            "id": "loops",
-            "title": "Loops",
-            "summary": "Loops let you repeat an action multiple times without copying code, like running something for each item in a list.",
-            "sample_question": "Explain the difference between a for loop and a while loop.",
-        },
-    ]
-
-
-def load_tutor_content() -> list[dict]:
-    """Load course concepts from JSON, with safe fallback."""
-    if not CONTENT_PATH.exists():
-        logger.warning("Tutor content file not found at %s, using defaults", CONTENT_PATH)
-        return _default_tutor_content()
-
+def load_faq() -> list[dict]:
+    """Load Blink Digital FAQ / info from JSON."""
+    if not FAQ_PATH.exists():
+        logger.warning("FAQ file not found at %s, using empty FAQ", FAQ_PATH)
+        return []
     try:
-        with CONTENT_PATH.open("r", encoding="utf-8") as f:
+        with FAQ_PATH.open("r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
-            raise ValueError("Content JSON must be a list of concepts")
+            raise ValueError("FAQ JSON must be a list")
         return data
     except Exception as e:
-        logger.warning("Failed to read tutor content JSON (%s), using defaults", e)
-        return _default_tutor_content()
+        logger.warning("Failed to read FAQ JSON (%s), using empty FAQ", e)
+        return []
 
 
-def make_tts_for_mode(mode: str) -> murf.TTS:
-    """Return the correct Murf Falcon voice for a given mode."""
-    mode = mode.lower().strip()
-    voice_id = "Matthew"
+def find_best_faq(question: str, faqs: list[dict]) -> dict | None:
+    """
+    Very simple keyword-based FAQ lookup.
+    Checks the question against each FAQ's 'keywords' list.
+    """
+    q = question.lower()
+    best = None
+    best_score = 0
 
-    if mode == "quiz":
-        voice_id = "Alicia"
-    elif mode == "teach_back":
-        voice_id = "Ken"
-    else:
-        voice_id = "Matthew"  # learn / default
+    for item in faqs:
+        keywords = item.get("keywords", [])
+        score = 0
+        for kw in keywords:
+            if kw.lower() in q:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best = item
 
-    return murf.TTS(
-        voice=voice_id,
-        style="Conversation",
-        tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-        text_pacing=True,
-    )
+    if best_score == 0:
+        return None
+    return best
 
 
 # ----------------------------------------------------
-# Single TutorAgent class with 3 modes + handoffs
+# SDR Agent
 # ----------------------------------------------------
 
 
-class TutorAgent(Agent):
+class BlinkSDRAgent(Agent):
     """
-    Day 4 – Teach-the-Tutor: Active Recall Coach
-
-    Modes:
-      - learn      → explains a concept (Murf Falcon: Matthew)
-      - quiz       → asks questions (Murf Falcon: Alicia)
-      - teach_back → user explains; agent gives feedback (Murf Falcon: Ken)
-
-    This class is instantiated with a specific (mode, concept_id).
-    Switching modes returns a NEW instance via a tool → triggers agent handoff.
+    Day 5 – Simple FAQ SDR + Lead Capture for Blink Digital.
     """
 
-    def __init__(
-        self,
-        mode: str = "intro",
-        concept_id: Optional[str] = None,
-    ) -> None:
-        self.mode = mode.strip().lower()
-        concepts = load_tutor_content()
-        self.concepts_by_id = {c["id"]: c for c in concepts}
+    def __init__(self) -> None:
+        self.faq_data = load_faq()
 
-        # Choose default concept if none given
-        if concept_id is None and concepts:
-            concept_id = concepts[0]["id"]
-        self.concept_id = concept_id
+        # Lead state in memory
+        self.lead: dict[str, str | None] = {
+            "name": None,
+            "company": None,
+            "email": None,
+            "role": None,
+            "use_case": None,
+            "team_size": None,
+            "timeline": None,
+            "notes": None,
+        }
 
-        concept_list_text = "\n".join(
-            f"- id: {c['id']} | title: {c['title']}"
-            for c in concepts
-        ) or "None (no concepts defined)."
-
-        # Safe lookup for current concept
-        concept = self.concepts_by_id.get(self.concept_id) if self.concept_id else None
-        concept_title = concept["title"] if concept else "Unknown concept"
-        concept_summary = concept["summary"] if concept else ""
-        concept_question = concept.get("sample_question", "") if concept else ""
-
-        # Different behavior hints per mode
-        if self.mode == "learn":
-            persona = "You are Matthew, a calm explainer."
-            mode_instructions = """
-LEARN MODE:
-- Explain the current concept clearly using the summary from content.
-- Break explanation into 2–3 short chunks.
-- After each chunk, ask a quick check like: "Does that make sense?" or "Should I give an example?".
-- Keep it concise and interactive.
-"""
-        elif self.mode == "quiz":
-            persona = "You are Alicia, a friendly quiz master."
-            mode_instructions = """
-QUIZ MODE:
-- Ask ONE question at a time about the current concept.
-- Use the sample_question as a starting point, then vary it.
-- Wait for the user's answer, then briefly evaluate:
-  - What they got right.
-  - What is missing or slightly off.
-- Stay encouraging; you can ask simple follow-ups.
-"""
-        elif self.mode == "teach_back":
-            persona = "You are Ken, a thoughtful coach."
-            mode_instructions = """
-TEACH_BACK MODE:
-- Ask the user to explain the current concept in their own words.
-- Let them talk and finish.
-- Then give QUALITATIVE FEEDBACK:
-  - What they explained well.
-  - 1–2 gaps or suggestions for improvement.
-- Give a simple mastery score 1–5.
-- Encourage them that teaching back is part of learning.
-"""
-        else:
-            # Intro / neutral mode
-            persona = "You are a neutral tutor orchestrator."
-            mode_instructions = """
-INTRO MODE:
-- Greet the user briefly.
-- Explain that you are an active recall tutor with three modes:
-  - learn (Matthew) – explanation
-  - quiz (Alicia) – questions
-  - teach_back (Ken) – they explain, you score
-- Show the user the available concept ids and titles.
-- Ask them TWO things:
-  1) Which concept id they want to study.
-  2) Which mode they want: learn, quiz, or teach_back.
-- Then call the `switch_mode` tool with the chosen mode + concept_id.
-"""
+        faq_overview_lines = []
+        for item in self.faq_data:
+            faq_overview_lines.append(
+                f"- {item.get('id', '')}: {item.get('question', '')}"
+            )
+        faq_overview = "\n".join(faq_overview_lines) if faq_overview_lines else "No FAQ loaded."
 
         instructions = f"""
-You are an ACTIVE RECALL PROGRAMMING TUTOR.
+You are a Sales Development Representative (SDR) name Mathew for Blink Digital, a digital-first creative and technology agency in India.
 
-Personality:
-{persona}
+Your goals:
+1) Greet visitors warmly and professionally.
+2) Quickly understand what they are working on and why they are interested.
+3) Answer basic questions about Blink Digital using the provided FAQ content.
+4) Collect key lead details in a natural, conversational way.
+5) When the user is done, summarize the lead and call the save_lead tool.
 
-AVAILABLE CONCEPTS (from JSON):
-{concept_list_text}
+Company context (Blink Digital):
+- Digital-first creative & technology agency in India.
+- Services: web & app development, UX/UI design, digital campaigns, content & social, performance marketing, creative tech.
+- Typical clients: startups, high-growth tech companies, established brands.
+- Pricing: project / retainer based, depends on scope and complexity (you CANNOT give exact quotes).
+- You must NOT invent detailed pricing, contract terms, or legal / financial promises.
 
-Current concept:
-- id: {self.concept_id}
-- title: {concept_title}
-- summary: {concept_summary}
-- sample_question: {concept_question}
+FAQ content available (for lookup_faq tool):
+{faq_overview}
 
-CURRENT MODE: {self.mode.upper()}
+FAQ behavior:
+- When the user asks about Blink Digital, services, who it's for, or pricing:
+  - Use the lookup_faq tool with the user question.
+  - Answer based ONLY on the content returned.
+  - If the FAQ doesn't cover something, say you are not sure and that a human will follow up.
 
-{mode_instructions}
+Lead capture:
+- Over the course of the conversation, politely collect:
+  - name
+  - company
+  - email
+  - role
+  - use_case (what they want to build or solve)
+  - team_size
+  - timeline (now / soon / later)
+- Ask for these naturally and not all at once.
+- Do NOT make up values. Only use what the user actually said.
 
-GENERAL RULES:
+End of call:
+- Detect when the user is done (phrases like "that's all", "I'm done", "thanks, that's it").
+- Before ending:
+  - Briefly summarize who they are, what they want, and rough timeline.
+  - Then call save_lead with the fields you have.
+  - If some fields are missing, pass an empty string for them.
+- After calling save_lead, close politely.
+
+Style:
+- Friendly, concise, slightly consultative.
 - Ask one clear question at a time.
-- Keep turns short and interactive.
-- Use concrete examples when helpful.
-- You can always ask which mode or concept the user wants next.
-- To change mode or concept, use the `switch_mode` tool.
-
-TOOLS:
-- `switch_mode(mode, concept_id)`:
-   Use this whenever the user says things like:
-   - "switch to quiz"
-   - "now teach back loops"
-   - "explain variables again"
-   It will create a new specialized tutor instance with the right voice.
+- Keep answers grounded in the FAQ and company description.
 """
+        super().__init__(instructions=instructions)
 
-        # Choose TTS per mode (Murf Falcon voices)
-        # Intro uses Matthew by default
-        tts_plugin = make_tts_for_mode(self.mode if self.mode != "intro" else "learn")
-
-        super().__init__(
-            instructions=instructions,
-            tts=tts_plugin,
-        )
-
-    async def on_enter(self) -> None:
-        """
-        Called when this TutorAgent instance becomes active (after handoff).
-        We give a short mode-specific greeting prompt.
-        """
-        if self.mode == "intro":
-            prompt = (
-                "Greet the user, explain the three modes and available concepts, "
-                "then ask which concept and mode they want to start with."
-            )
-        elif self.mode == "learn":
-            prompt = (
-                "Briefly greet the user as Matthew and start explaining the current concept in one or two sentences, "
-"then ask if they'd like more detail or an example."
-
-            )
-        elif self.mode == "quiz":
-            prompt = (
-                "Introduce yourself as Alicia and ask one quiz question about the current concept."
-            )
-        elif self.mode == "teach_back":
-            prompt = (
-                "Introduce yourself as Ken and ask the user to explain the current concept "
-                "in their own words."
-            )
-        else:
-            prompt = "Greet the user and ask how they want to study."
-
-        await self.session.generate_reply(instructions=prompt)
-
-    # ---------------- Tool: switch_mode → handoff ----------------
+    # ---------------- FAQ tool ----------------
 
     @function_tool
-    async def switch_mode(
-        self,
-        context: RunContext,
-        mode: str,
-        concept_id: Optional[str] = None,
-    ):
+    async def lookup_faq(self, context: RunContext, question: str) -> dict:
         """
-        Switch to a different learning mode (and optionally concept) by returning
-        a NEW TutorAgent instance → triggers an agent handoff.
+        Look up the most relevant FAQ entry for a given user question.
 
         Args:
-            mode: "learn", "quiz", or "teach_back".
-            concept_id: Optional concept id. If omitted, keeps current concept.
+            question: The user's question in natural language.
+
+        Returns:
+            A dict with 'question' and 'answer' fields (or a message if nothing matched).
         """
-        mode = mode.strip().lower()
-        if mode not in {"learn", "quiz", "teach_back"}:
-            raise ValueError("mode must be one of: learn, quiz, teach_back")
+        if not self.faq_data:
+            return {
+                "found": False,
+                "message": "No FAQ content is loaded.",
+                "question": "",
+                "answer": "",
+            }
 
-        if concept_id is None:
-            concept_id = self.concept_id
+        best = find_best_faq(question, self.faq_data)
+        if not best:
+            return {
+                "found": False,
+                "message": "No matching FAQ entry was found for this question.",
+                "question": "",
+                "answer": "",
+            }
 
-        if concept_id not in self.concepts_by_id:
-            raise ValueError(
-                f"Unknown concept_id '{concept_id}'. "
-                f"Valid ids: {', '.join(self.concepts_by_id.keys())}"
-            )
+        return {
+            "found": True,
+            "message": "FAQ match found.",
+            "question": best.get("question", ""),
+            "answer": best.get("answer", ""),
+        }
 
-        logger.info("Handoff: switching to mode=%s, concept=%s", mode, concept_id)
+    # ---------------- Lead save tool ----------------
 
-        # IMPORTANT: returning a new Agent → AGENT HANDOFF (per docs)
-        # We are NOT passing chat_ctx here to avoid the session access error.
-        return TutorAgent(
-            mode=mode,
-            concept_id=concept_id,
-        )
+    @function_tool
+    async def save_lead(
+        self,
+        context: RunContext,
+        name: str,
+        company: str,
+        email: str,
+        role: str,
+        use_case: str,
+        team_size: str,
+        timeline: str,
+        notes: str = "",
+    ) -> str:
+        """
+        Save the collected lead to a JSON file.
 
+        Args:
+            name: Person's name (or empty string if not provided).
+            company: Company name.
+            email: Email address.
+            role: Their role or title.
+            use_case: Short description of what they want Blink Digital for.
+            team_size: Approximate team size.
+            timeline: When they want to start (now / soon / later).
+            notes: Any extra notes or summary.
+        """
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "name": name,
+            "company": company,
+            "email": email,
+            "role": role,
+            "use_case": use_case,
+            "team_size": team_size,
+            "timeline": timeline,
+            "notes": notes,
+        }
+
+        # Save per-lead file
+        file_path = LEADS_DIR / f"lead_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with file_path.open("w", encoding="utf-8") as f:
+            json.dump(entry, f, indent=2)
+
+        logger.info("Saved lead to %s", file_path)
+
+        return f"Lead saved to {file_path.name}"
+    
 
 # ----------------------------------------------------
-# LiveKit session wiring
+# LiveKit wiring (similar to previous days)
 # ----------------------------------------------------
 
 
@@ -305,20 +257,22 @@ def prewarm(proc: JobProcess):
 
 
 async def entrypoint(ctx: JobContext):
+    # Logging setup
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
     session = AgentSession(
-        # STT
         stt=deepgram.STT(model="nova-3"),
-        # LLM
         llm=google.LLM(
             model="gemini-2.5-flash",
         ),
-        # Default TTS (will be overridden by TutorAgent’s own tts)
-        tts=make_tts_for_mode("learn"),
-        # Turn detection / VAD
+        tts=murf.TTS(
+            voice="en-US-matthew",
+            style="Conversation",
+            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            text_pacing=True,
+        ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
@@ -337,9 +291,8 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(log_usage)
 
-    # Start in INTRO mode so it asks for mode + concept first
     await session.start(
-        agent=TutorAgent(mode="intro", concept_id=None),
+        agent=BlinkSDRAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
