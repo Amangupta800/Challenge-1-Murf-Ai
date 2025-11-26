@@ -1,0 +1,16 @@
+{
+  "userName": "John",
+  "securityIdentifier": "210001",
+  "cardEnding": "9090",
+  "status": "confirmed_safe",
+  "transactionName": "ABC Industries",
+  "transactionAmount": "\u20b93,499.00",
+  "transactionTime": "2025-11-20T15:32:00",
+  "transactionCategory": "e-commerce",
+  "transactionSource": "alibaba.com",
+  "transactionLocation": "Mumbai, India",
+  "verificationQuestion": "What is your favourite colour?",
+  "verificationAnswer": "blue",
+  "outcomeNote": "Customer confirmed they made the transaction.",
+  "lastUpdated": "2025-11-26T23:03:56"
+}

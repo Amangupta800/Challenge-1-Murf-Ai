@@ -1,7 +1,5 @@
 import logging
-import json
 from datetime import datetime
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -16,11 +14,13 @@ from livekit.agents import (
     cli,
     metrics,
     tokenize,
-    function_tool,
-    RunContext,
 )
+from livekit.agents import function_tool, RunContext
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+# Import SQLite-backed helpers
+from fraud_db import load_fraud_case, save_fraud_case
 
 # ----------------------------------------------------
 # Setup
@@ -29,226 +29,204 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
-BASE_DIR = Path(__file__).parent.parent
-FAQ_PATH = BASE_DIR / "shared-data" / "day5_blink_faq.json"
-LEADS_DIR = BASE_DIR / "leads"
-LEADS_DIR.mkdir(exist_ok=True)
-
-
-def load_faq() -> list[dict]:
-    """Load Blink Digital FAQ / info from JSON."""
-    if not FAQ_PATH.exists():
-        logger.warning("FAQ file not found at %s, using empty FAQ", FAQ_PATH)
-        return []
-    try:
-        with FAQ_PATH.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            raise ValueError("FAQ JSON must be a list")
-        return data
-    except Exception as e:
-        logger.warning("Failed to read FAQ JSON (%s), using empty FAQ", e)
-        return []
-
-
-def find_best_faq(question: str, faqs: list[dict]) -> dict | None:
-    """
-    Very simple keyword-based FAQ lookup.
-    Checks the question against each FAQ's 'keywords' list.
-    """
-    q = question.lower()
-    best = None
-    best_score = 0
-
-    for item in faqs:
-        keywords = item.get("keywords", [])
-        score = 0
-        for kw in keywords:
-            if kw.lower() in q:
-                score += 1
-        if score > best_score:
-            best_score = score
-            best = item
-
-    if best_score == 0:
-        return None
-    return best
-
 
 # ----------------------------------------------------
-# SDR Agent
+# Fraud Alert Agent
 # ----------------------------------------------------
 
 
-class BlinkSDRAgent(Agent):
+class FraudAlertAgent(Agent):
     """
-    Day 5 – Simple FAQ SDR + Lead Capture for Blink Digital.
+    Day 6 – Fraud Alert Voice Agent.
+
+    Behavior:
+
+    - Introduce as fictional bank fraud department.
+    - Verify customer with a *non-sensitive* security question from the case.
+    - Read suspicious transaction (amount, merchant, masked card, time, location).
+    - Ask if the transaction is legitimate.
+    - Update the case status in SQLite as:
+        - confirmed_safe
+        - confirmed_fraud
+        - verification_failed
+      and add an outcome note.
     """
 
     def __init__(self) -> None:
-        self.faq_data = load_faq()
+        # Load the single fraud case from SQLite "database"
+        self.case = load_fraud_case()
 
-        # Lead state in memory
-        self.lead: dict[str, str | None] = {
-            "name": None,
-            "company": None,
-            "email": None,
-            "role": None,
-            "use_case": None,
-            "team_size": None,
-            "timeline": None,
-            "notes": None,
-        }
-
-        faq_overview_lines = []
-        for item in self.faq_data:
-            faq_overview_lines.append(
-                f"- {item.get('id', '')}: {item.get('question', '')}"
-            )
-        faq_overview = "\n".join(faq_overview_lines) if faq_overview_lines else "No FAQ loaded."
+        # Never expose verificationAnswer directly.
+        verification_question = self.case.get("verificationQuestion", "a security question")
+        bank_name = "ICC Bank"  # you can rename the fictional bank
 
         instructions = f"""
-You are a Sales Development Representative (SDR) name Mathew for Blink Digital, a digital-first creative and technology agency in India.
+You are a FRAUD DETECTION VOICE AGENT for a fictional bank called "{bank_name}".
 
-Your goals:
-1) Greet visitors warmly and professionally.
-2) Quickly understand what they are working on and why they are interested.
-3) Answer basic questions about Blink Digital using the provided FAQ content.
-4) Collect key lead details in a natural, conversational way.
-5) When the user is done, summarize the lead and call the save_lead tool.
+SAFETY:
+- DO NOT ask for full card numbers, PINs, OTPs, passwords, or any sensitive credentials.
+- ONLY use the NON-SENSITIVE security question stored in the fraud case to verify the user.
 
-Company context (Blink Digital):
-- Digital-first creative & technology agency in India.
-- Services: web & app development, UX/UI design, digital campaigns, content & social, performance marketing, creative tech.
-- Typical clients: startups, high-growth tech companies, established brands.
-- Pricing: project / retainer based, depends on scope and complexity (you CANNOT give exact quotes).
-- You must NOT invent detailed pricing, contract terms, or legal / financial promises.
 
-FAQ content available (for lookup_faq tool):
-{faq_overview}
+CURRENT FRAUD CASE (DO NOT READ VERBATIM, USE IT TO GUIDE CONVERSATION):
+- Customer name: {self.case.get("userName", "Aman Gupta")}
+- Security identifier (internal only): {self.case.get("securityIdentifier", "N/A")}
+- Card ending: **** {self.case.get("cardEnding", "XXXX")}
+- Merchant: {self.case.get("transactionName", "")}
+- Amount: {self.case.get("transactionAmount", "")}
+- Time: {self.case.get("transactionTime", "")}
+- Category: {self.case.get("transactionCategory", "")}
+- Source: {self.case.get("transactionSource", "")}
+- Location: {self.case.get("transactionLocation", "")}
+- Current status: {self.case.get("status", "")}
+- Verification question: "{verification_question}"
 
-FAQ behavior:
-- When the user asks about Blink Digital, services, who it's for, or pricing:
-  - Use the lookup_faq tool with the user question.
-  - Answer based ONLY on the content returned.
-  - If the FAQ doesn't cover something, say you are not sure and that a human will follow up.
+FLOW YOU MUST FOLLOW:
 
-Lead capture:
-- Over the course of the conversation, politely collect:
-  - name
-  - company
-  - email
-  - role
-  - use_case (what they want to build or solve)
-  - team_size
-  - timeline (now / soon / later)
-- Ask for these naturally and not all at once.
-- Do NOT make up values. Only use what the user actually said.
+1) GREETING & CONTEXT
+   - Politely introduce yourself:
+     e.g. "Hello, this is the fraud monitoring team from {bank_name}."
+   - Explain this is about a suspicious transaction on a card ending with the last digits.
+ 
 
-End of call:
-- Detect when the user is done (phrases like "that's all", "I'm done", "thanks, that's it").
-- Before ending:
-  - Briefly summarize who they are, what they want, and rough timeline.
-  - Then call save_lead with the fields you have.
-  - If some fields are missing, pass an empty string for them.
-- After calling save_lead, close politely.
+2) BASIC VERIFICATION
+   - Use ONLY the verification question:
+     "{verification_question}"
+   - Ask the user this question in your own words.
+   - Compare their answer USING the `check_verification_answer` tool.
+   - If the tool result says verification_failed:
+       - Politely say you cannot continue without verification.
+       - Call `mark_verification_failed` tool.
+       - End the call.
 
-Style:
-- Friendly, concise, slightly consultative.
-- Ask one clear question at a time.
-- Keep answers grounded in the FAQ and company description.
+3) SUSPICIOUS TRANSACTION DETAILS
+   - If verification passes:
+       - Briefly describe the transaction:
+         - The amount,
+         - The merchant,
+         - The approximate time/date,
+         - That it was an e-commerce transaction on the card ending with the last 4 digits.
+       - Ask clearly:
+         "Did you make this transaction yourself?" (YES/NO style question).
+
+4) DECISION LOGIC
+   - If the user confirms they DID make the transaction:
+       - Reassure them that the card is safe.
+       - Call `mark_case_safe` tool with a short summary note.
+       - Give a short verbal summary: "We have marked this as a safe, legitimate transaction."
+       - End politely.
+
+   - If the user says they DID NOT make the transaction or expresses clear doubt:
+       - Call `mark_case_fraudulent` tool with a short summary note:
+         e.g. "Customer denies transaction; treat as fraud in this demo."
+       - Explain that in a real system the card would be blocked and a dispute started
+         (but make clear this is a demo).
+       - Reassure them.
+       - End politely.
+
+5) STYLE:
+   - Calm, professional, reassuring.
+   - Short, simple sentences.
+   - One question at a time.
+   - No medical, legal, or financial promises – it's a demo.
 """
+
         super().__init__(instructions=instructions)
 
-    # ---------------- FAQ tool ----------------
+    # ---------------- Tools ----------------
 
     @function_tool
-    async def lookup_faq(self, context: RunContext, question: str) -> dict:
-        """
-        Look up the most relevant FAQ entry for a given user question.
-
-        Args:
-            question: The user's question in natural language.
-
-        Returns:
-            A dict with 'question' and 'answer' fields (or a message if nothing matched).
-        """
-        if not self.faq_data:
-            return {
-                "found": False,
-                "message": "No FAQ content is loaded.",
-                "question": "",
-                "answer": "",
-            }
-
-        best = find_best_faq(question, self.faq_data)
-        if not best:
-            return {
-                "found": False,
-                "message": "No matching FAQ entry was found for this question.",
-                "question": "",
-                "answer": "",
-            }
-
-        return {
-            "found": True,
-            "message": "FAQ match found.",
-            "question": best.get("question", ""),
-            "answer": best.get("answer", ""),
-        }
-
-    # ---------------- Lead save tool ----------------
-
-    @function_tool
-    async def save_lead(
+    async def check_verification_answer(
         self,
         context: RunContext,
-        name: str,
-        company: str,
-        email: str,
-        role: str,
-        use_case: str,
-        team_size: str,
-        timeline: str,
-        notes: str = "",
-    ) -> str:
+        user_answer: str,
+    ) -> dict:
         """
-        Save the collected lead to a JSON file.
+        Compare the user's answer to the stored verification answer (case-insensitive).
+
+        Returns:
+          {
+            "matched": bool,
+            "message": short_text_explaining_match
+          }
+        """
+        expected = (self.case.get("verificationAnswer") or "").strip().lower()
+        got = (user_answer or "").strip().lower()
+
+        matched = bool(expected) and (expected == got)
+        if matched:
+            msg = "Verification answer matched. You may proceed with discussing the transaction."
+        else:
+            msg = "Verification answer did not match. You should not proceed."
+
+        return {"matched": matched, "message": msg}
+
+    @function_tool
+    async def mark_case_safe(
+        self,
+        context: RunContext,
+        note: str,
+    ) -> dict:
+        """
+        Mark the fraud case as CONFIRMED SAFE.
 
         Args:
-            name: Person's name (or empty string if not provided).
-            company: Company name.
-            email: Email address.
-            role: Their role or title.
-            use_case: Short description of what they want Blink Digital for.
-            team_size: Approximate team size.
-            timeline: When they want to start (now / soon / later).
-            notes: Any extra notes or summary.
+          note: Short explanation of why it was marked safe.
         """
-        entry = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "name": name,
-            "company": company,
-            "email": email,
-            "role": role,
-            "use_case": use_case,
-            "team_size": team_size,
-            "timeline": timeline,
-            "notes": notes,
+        self.case["status"] = "confirmed_safe"
+        self.case["outcomeNote"] = note
+        self.case["lastUpdated"] = datetime.now().isoformat(timespec="seconds")
+        save_fraud_case(self.case)
+        return {
+            "status": self.case["status"],
+            "outcomeNote": self.case["outcomeNote"],
         }
 
-        # Save per-lead file
-        file_path = LEADS_DIR / f"lead_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with file_path.open("w", encoding="utf-8") as f:
-            json.dump(entry, f, indent=2)
+    @function_tool
+    async def mark_case_fraudulent(
+        self,
+        context: RunContext,
+        note: str,
+    ) -> dict:
+        """
+        Mark the fraud case as CONFIRMED FRAUDULENT.
 
-        logger.info("Saved lead to %s", file_path)
+        Args:
+          note: Short explanation of why it was marked as fraud.
+        """
+        self.case["status"] = "confirmed_fraud"
+        self.case["outcomeNote"] = note
+        self.case["lastUpdated"] = datetime.now().isoformat(timespec="seconds")
+        save_fraud_case(self.case)
+        return {
+            "status": self.case["status"],
+            "outcomeNote": self.case["outcomeNote"],
+        }
 
-        return f"Lead saved to {file_path.name}"
-    
+    @function_tool
+    async def mark_verification_failed(
+        self,
+        context: RunContext,
+        note: str,
+    ) -> dict:
+        """
+        Mark the fraud case as VERIFICATION FAILED and stop the call.
+
+        Args:
+          note: Short explanation (e.g. wrong answer to security question).
+        """
+        self.case["status"] = "verification_failed"
+        self.case["outcomeNote"] = note
+        self.case["lastUpdated"] = datetime.now().isoformat(timespec="seconds")
+        save_fraud_case(self.case)
+        return {
+            "status": self.case["status"],
+            "outcomeNote": self.case["outcomeNote"],
+        }
+
 
 # ----------------------------------------------------
-# LiveKit wiring (similar to previous days)
+# LiveKit wiring (same pattern as previous days)
 # ----------------------------------------------------
 
 
@@ -257,7 +235,7 @@ def prewarm(proc: JobProcess):
 
 
 async def entrypoint(ctx: JobContext):
-    # Logging setup
+    # Logging context
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
@@ -268,7 +246,7 @@ async def entrypoint(ctx: JobContext):
             model="gemini-2.5-flash",
         ),
         tts=murf.TTS(
-            voice="en-US-matthew",
+            voice="en-US-matthew",  # choose any Murf Falcon voice you like
             style="Conversation",
             tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
             text_pacing=True,
@@ -292,7 +270,7 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(log_usage)
 
     await session.start(
-        agent=BlinkSDRAgent(),
+        agent=FraudAlertAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
