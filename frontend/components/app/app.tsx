@@ -13,9 +13,13 @@ interface AppProps {
 export function App({ appConfig }: AppProps) {
   return (
     <SessionProvider appConfig={appConfig}>
-      <main className="grid h-svh grid-cols-1 place-content-center">
-        <ViewController />
+      <main className="grid min-h-svh grid-cols-1 place-content-center">
+        {/* Optional panel so the black bar doesn’t float naked on the BG */}
+        <div className="rounded-2xl bg-black/80 p-6 shadow-xl">
+          <ViewController />
+        </div>
       </main>
+
       <StartAudio label="Start Audio" />
       <RoomAudioRenderer />
       <Toaster />

@@ -1,0 +1,5 @@
+RECPIES = {
+    "peanut butter sandwich": ["Whole Wheat Bread", "Peanut Butter (Large)"],
+    "pasta": ["Pasta Alfredo"],
+    "pasta for two": ["Pasta Alfredo", "Milk 1L"]
+}

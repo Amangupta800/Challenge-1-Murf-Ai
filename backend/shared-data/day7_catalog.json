@@ -1,0 +1,17 @@
+{
+  "groceries": [
+    { "id": 1, "name": "Whole Wheat Bread", "price": 45, "tags": ["bread"] },
+    { "id": 2, "name": "Eggs (12 pack)", "price": 80, "tags": ["eggs"] },
+    { "id": 3, "name": "Milk 1L", "price": 60, "tags": ["milk"] },
+    { "id": 4, "name": "Peanut Butter (Large)", "price": 180, "tags": ["peanut_butter"] }
+  ],
+  "snacks": [
+    { "id": 5, "name": "Potato Chips", "price": 35 },
+    { "id": 6, "name": "Chocolate Bar", "price": 25 }
+  ],
+  "prepared_food": [
+    { "id": 7, "name": "Veg Sandwich", "price": 120 },
+    { "id": 8, "name": "Cheese Pizza", "price": 250 },
+    { "id": 9, "name": "Pasta Alfredo", "price": 230 }
+  ]
+}
