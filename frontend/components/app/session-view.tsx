@@ -3,8 +3,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import type { AppConfig } from '@/app-config';
-import { ChatTranscript } from '@/components/app/chat-transcript';
-import { PreConnectMessage } from '@/components/app/preconnect-message';
 import { TileLayout } from '@/components/app/tile-layout';
 import {
   AgentControlBar,
@@ -14,11 +12,12 @@ import { useChatMessages } from '@/hooks/useChatMessages';
 import { useConnectionTimeout } from '@/hooks/useConnectionTimout';
 import { useDebugMode } from '@/hooks/useDebug';
 import { cn } from '@/lib/utils';
-import { ScrollArea } from '../livekit/scroll-area/scroll-area';
+import { ScrollArea } from '@/components/livekit/scroll-area/scroll-area';
 
-const MotionBottom = motion.create('div');
+const MotionBottom = motion.div;
 
 const IN_DEVELOPMENT = process.env.NODE_ENV !== 'production';
+
 const BOTTOM_VIEW_MOTION_PROPS = {
   variants: {
     visible: {
@@ -36,7 +35,7 @@ const BOTTOM_VIEW_MOTION_PROPS = {
   transition: {
     duration: 0.3,
     delay: 0.5,
-    ease: 'easeOut',
+    ease: 'easeOut' as const,
   },
 };
 
@@ -50,7 +49,7 @@ export function Fade({ top = false, bottom = false, className }: FadeProps) {
   return (
     <div
       className={cn(
-        'from-background pointer-events-none h-4 bg-linear-to-b to-transparent',
+        'pointer-events-none h-4 from-background to-transparent',
         top && 'bg-linear-to-b',
         bottom && 'bg-linear-to-t',
         className
@@ -58,6 +57,7 @@ export function Fade({ top = false, bottom = false, className }: FadeProps) {
     />
   );
 }
+
 interface SessionViewProps {
   appConfig: AppConfig;
 }
@@ -70,7 +70,7 @@ export const SessionView = ({
   useDebugMode({ enabled: IN_DEVELOPMENT });
 
   const messages = useChatMessages();
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true); // keep the story panel open by default
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const controls: ControlBarControls = {
@@ -81,50 +81,117 @@ export const SessionView = ({
     screenShare: appConfig.supportsVideoInput,
   };
 
+  // auto-scroll to the latest message
   useEffect(() => {
-    const lastMessage = messages.at(-1);
-    const lastMessageIsLocal = lastMessage?.from?.isLocal === true;
+    if (!scrollAreaRef.current) return;
+    scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
+  }, [messages.length]);
 
-    if (scrollAreaRef.current && lastMessageIsLocal) {
-      scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
-    }
-  }, [messages]);
+  const handleRestart = () => {
+    // simplest way for Day 8: start a fresh adventure
+    window.location.reload();
+  };
 
   return (
-    <section className="bg-background relative z-10 h-full w-full overflow-hidden" {...props}>
-      {/* Chat Transcript */}
+    <section
+      className="relative z-10 flex h-full w-full items-center justify-center bg-black"
+      {...props}
+    >
+      {/* Centered GM panel */}
+      <div className="relative mx-auto flex h-full w-full max-w-5xl flex-col px-4 py-8 md:px-10">
+        {/* Top: avatar / bars */}
+        <div className="flex items-center justify-center pb-6">
+          <TileLayout chatOpen={chatOpen} />
+        </div>
+
+        {/* Middle: story card */}
+        <div className="relative mx-auto flex w-full max-w-3xl flex-1 flex-col rounded-3xl bg-neutral-950/90 p-6 shadow-[0_0_60px_rgba(0,0,0,0.8)]">
+          {/* Header row */}
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-400">
+                Day 8 • Voice Game Master
+              </p>
+              <h1 className="text-xl font-semibold text-zinc-50">
+                The Lost Groves of Eldoria
+              </h1>
+              <p className="text-xs text-zinc-400">
+                Speak your actions. The Game Master continues the story.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleRestart}
+              className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold text-black shadow-lg transition hover:bg-emerald-400"
+            >
+              Restart story
+            </button>
+          </div>
+
+          {/* Transcript area – GM + player speech */}
+          <div className="relative mt-2 flex-1 overflow-hidden rounded-2xl bg-zinc-950/80">
+            <Fade top className="absolute inset-x-0 top-0 h-8" />
+            <ScrollArea
+              ref={scrollAreaRef}
+              className="max-h-[340px] px-4 pt-6 pb-8"
+            >
+              <div className="space-y-3">
+                {messages.map((m) => {
+  const isUser = m.from?.isLocal === true;
+  const label = isUser ? 'You' : 'Game Master';
+
+  return (
+    <div
+      key={m.timestamp}
+      className={cn(
+        'flex w-full',
+        isUser ? 'justify-end' : 'justify-start',
+      )}
+    >
       <div
         className={cn(
-          'fixed inset-0 grid grid-cols-1 grid-rows-1',
-          !chatOpen && 'pointer-events-none'
+          'max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed',
+          isUser ? 'bg-emerald-500 text-black' : 'bg-zinc-900 text-zinc-50',
         )}
       >
-        <Fade top className="absolute inset-x-4 top-0 h-40" />
-        <ScrollArea ref={scrollAreaRef} className="px-4 pt-40 pb-[150px] md:px-6 md:pb-[180px]">
-          <ChatTranscript
-            hidden={!chatOpen}
-            messages={messages}
-            className="mx-auto max-w-2xl space-y-3 transition-opacity duration-300 ease-out"
-          />
-        </ScrollArea>
-      </div>
-
-      {/* Tile Layout */}
-      <TileLayout chatOpen={chatOpen} />
-
-      {/* Bottom */}
-      <MotionBottom
-        {...BOTTOM_VIEW_MOTION_PROPS}
-        className="fixed inset-x-3 bottom-0 z-50 md:inset-x-12"
-      >
-        {appConfig.isPreConnectBufferEnabled && (
-          <PreConnectMessage messages={messages} className="pb-4" />
-        )}
-        <div className="bg-background relative mx-auto max-w-2xl pb-3 md:pb-12">
-          <Fade bottom className="absolute inset-x-0 top-0 h-4 -translate-y-full" />
-          <AgentControlBar controls={controls} onChatOpenChange={setChatOpen} />
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-70">
+          {label}
         </div>
-      </MotionBottom>
+
+        <p className="whitespace-pre-line">
+          {m.message}
+        </p>
+      </div>
+    </div>
+  );
+})}
+
+                          
+
+                {messages.length === 0 && (
+                  <p className="text-center text-xs text-zinc-500">
+                    When the call starts, your actions and the Game Master&apos;s
+                    narration will appear here.
+                  </p>
+                )}
+              </div>
+            </ScrollArea>
+            <Fade bottom className="pointer-events-none absolute inset-x-0 bottom-0 h-10" />
+          </div>
+        </div>
+
+        {/* Bottom control bar */}
+        <MotionBottom
+          {...BOTTOM_VIEW_MOTION_PROPS}
+          className="pointer-events-auto fixed inset-x-3 bottom-0 z-50 md:inset-x-12"
+        >
+          <div className="relative mx-auto max-w-2xl pb-4 md:pb-10">
+            <Fade bottom className="absolute inset-x-0 top-0 h-4 -translate-y-full" />
+            <AgentControlBar controls={controls} onChatOpenChange={setChatOpen} />
+          </div>
+        </MotionBottom>
+      </div>
     </section>
   );
 };
